@@ -40,11 +40,41 @@ $ kubectl expose pod backend --port 80
 $ kubectl exec frontend -- curl backend
 $ kubectl exec backend -- curl frontend
 # create the `default-deny` network policy
-$ kubectl create -f https://github.com/cks/default-deny.yaml
+$ kubectl create -f https://raw.githubusercontent.com/mstelles/cks/main/default-deny.yaml
 $ kubectl get netpol
 # test connectivity between the pods once again - it will fail
 $ kubectl exec frontend -- curl backend
 $ kubectl exec backend -- curl frontend
 ```
 
+- Allow **any** TCP traffic from frontend to backend, using two separate policy files:
+  - The pods will by defaul have the `run: <pod name>` label and this is what is going to be used as referrence;
+  - frontend.yaml: allows all egress traffic from frontend pods;
+  - backend.yaml: allows all infress traffic to backend pods.
+
+```bash
+# apply the policy to the backend pods
+$ kubectl create -f https://raw.githubusercontent.com/mstelles/cks/main/backend.yaml
+# apply the policy to the frontend pods
+$ kubectl create -f https://raw.githubusercontent.com/mstelles/cks/main/frontend.yaml
+# check the policies
+$ kubectl get netpol
+```
+
+At this point, tests are possible **only** using IP addresses as DNS name resolution is not allowed.
+
+```bash
+$ kubectl get pods -o wide -l=run=backend
+NAME      READY   STATUS    RESTARTS   AGE   IP          NODE          NOMINATED NODE   READINESS GATES
+backend   1/1     Running   2          39h   10.44.0.2   k8sworker01   <none>           <none>
+$ kubectl exec frontend -- curl 10.44.0.2
+```
+
+- Allow DNS name resolution: 
+  - Create a separate policy to do so (my choice - dns.yaml) or add it to any other policy.
+
+```bash
+# apply the policy to allow DNS name resolution
+$ kubectl apply -f https://raw.githubusercontent.com/mstelles/cks/main/dns.yaml
+```
 
