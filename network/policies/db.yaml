@@ -1,16 +1,21 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: backend
-  namespace: default
+  name: db
+  namespace: db
 spec:
   podSelector:
     matchLabels:
-      run: backend
+      run: db
   policyTypes:
   - Ingress
+  - Egress
   ingress:
   - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: default
     - podSelector:
         matchLabels:
-          run: frontend
+          run: backend
+...
