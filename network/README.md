@@ -146,3 +146,95 @@ ETag: "6137835f-267"
 Accept-Ranges: bytes
 ```
 
+
+
+### Ingress
+
+- A wrapper that will generate a config which will run in the pod responsible for the service. There's going to have a service as well, pointing to the ingress pods.
+- Nginx ingress installation (search for nginx ingress installation and head to `bare-metal`)
+  - OBS: testing with k8s v1.21, the ingress controller versions above `0.49.3` didn't work.
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v0.49.3/deploy/static/provider/baremetal/deploy.yaml
+```
+
+- Checking:
+
+```bash
+kubectl -n ingress-nginx get pod,svc
+NAME                                            READY   STATUS      RESTARTS   AGE
+pod/ingress-nginx-admission-create-vhgbd        0/1     Completed   0          2m52s
+pod/ingress-nginx-admission-patch-qm7rf         0/1     Completed   1          2m52s
+pod/ingress-nginx-controller-5486956f45-zngsk   1/1     Running     0          2m52s
+
+NAME                                         TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)                      AGE
+service/ingress-nginx-controller             NodePort    10.105.173.152   <none>        80:32319/TCP,443:30991/TCP   2m52s
+service/ingress-nginx-controller-admission   ClusterIP   10.111.116.106   <none>        443/TCP                      2m52s
+```
+
+- Create the configuration (get from kubernetes.io an example).
+
+```yaml
+kubectl apply -f https://raw.githubusercontent.com/mstelles/cks/main/network/ingress/ingress.yaml
+```
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /nginx
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-svc
+            port:
+              number: 80
+
+      - path: /httpd
+        pathType: Prefix
+        backend:
+          service:
+            name: httpd=svc
+            port:
+              number: 80
+
+```
+
+- Create and expose two pods to act as backend, using the same name as specified on the `ingress` configuration.
+
+```bash
+kubectl run nginx --image=nginx
+kubectl run httpd --image=httpd
+kubectl expose pod httpd --name httpd-svc --port 80
+kubectl expose pod nginx --name nginx-svc --port 80
+```
+
+- To test, I used another simple pod just to execute `curl` commands, using the node IP and the port from the service.
+
+```bash
+kubectl -n ingress-nginx get svc ingress-nginx-controller
+NAME                       TYPE       CLUSTER-IP       EXTERNAL-IP   PORT(S)                      AGE
+ingress-nginx-controller   NodePort   10.104.226.221   <none>        80:32678/TCP,443:30802/TCP   58m
+kubectl get nodes -o wide
+NAME          STATUS   ROLES                  AGE   VERSION   INTERNAL-IP     EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION       CONTAINER-RUNTIME
+k8smaster     Ready    control-plane,master   19d   v1.21.0   192.168.1.160   <none>        Ubuntu 18.04.5 LTS   4.15.0-159-generic   docker://20.10.7
+k8sworker01   Ready    <none>                 19d   v1.21.0   192.168.1.161   <none>        Ubuntu 18.04.5 LTS   4.15.0-159-generic   docker://20.10.7
+```
+
+
+
+```bash
+kubectl run multi --image=mstelles/multi
+# testing the nginx service
+kubectl exec -ti multi -- curl http://192.168.1.161:32678/nginx
+# testing the httpd service
+kubectl exec -ti multi -- curl http://192.168.1.161:32678/httpd
+```
+
