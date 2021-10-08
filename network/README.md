@@ -1,5 +1,3 @@
-
-
 ### Network policies
 
 All files used here can be found on this repository: https://github.com/mstelles/cks/blob/main/network/policies
@@ -236,5 +234,71 @@ kubectl run multi --image=mstelles/multi
 kubectl exec -ti multi -- curl http://192.168.1.161:32678/nginx
 # testing the httpd service
 kubectl exec -ti multi -- curl http://192.168.1.161:32678/httpd
+```
+
+#### OBS.: Since the configuration points to a path without the last `/`, any value that start with the same string will be accepted.
+
+```bash
+kubectl exec -ti multi -- curl http://192.168.1.161:32678/httpdasdasdaasdasdas
+<html><body><h1>It works!</h1></body></html>
+```
+
+
+
+### Secure Ingress
+
+By default there's a port exposed for the HTTPS protocol, using a self signed certificate.
+
+```bash
+kubectl exec -ti multi -- curl -vk https://192.168.1.161:30802/httpd | grep -A5 "Server certificate"
+* Server certificate:
+*  subject: O=Acme Co; CN=Kubernetes Ingress Controller Fake Certificate
+*  start date: Oct  8 08:56:24 2021 GMT
+*  expire date: Oct  8 08:56:24 2022 GMT
+*  issuer: O=Acme Co; CN=Kubernetes Ingress Controller Fake Certificate
+*  SSL certificate verify result: unable to get local issuer certificate (20), continuing anyway.
+```
+
+In order to change this to use another certificate (either self signed or issued by a valid CA), a procedure should be followed.
+
+- Create a self signed certificate. It's important to add a `FQDN` to the certificate as this will be used in the ingress to match the protocol with the host.
+
+```bash
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj '/CN=secure-ingress.internal,/O=wadda'
+```
+
+- Create a secret to store the certificate information.
+
+```yaml
+kubectl create secret tls secure-ingress --cert=cert.pem --key=key.pem
+# check the CN
+openssl x509 -in cert.pem -text -noout
+```
+
+- Check
+
+```bash
+kubectl get secret --all-namespaces --field-selector='type=kubernetes.io/tls'
+NAMESPACE   NAME             TYPE                DATA   AGE
+default     secure-ingress   kubernetes.io/tls   2      2m25s
+```
+
+- Adjust the ingress to add a section for hte HTTPS communication.
+
+```yaml
+(...)
+spec:
+  tls:
+  - hosts: secure-ingress.internal
+    secretName: secure-ingress
+  rules:
+    - hosts: secure-ingress.internal
+(...)
+```
+
+- Test with curl, forcing it to resolve the FQDN to the node's IP address.
+
+```bash
+kubectl exec -ti multi -- curl -vk https://secure-ingress.internal:30802/httpd --resolve secure-ingress.internal:30802:192.168.1.161
 ```
 
