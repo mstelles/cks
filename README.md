@@ -124,7 +124,22 @@ kubectl -n kubernetes-dashboard create rolebinding insecure --serviceaccount kub
 kubectl -n kubernetes-dashboard create clusterrolebinding insecure --serviceaccount kubernetes-dashboard:kubernetes-dashboard --clusterrole view
 ```
 
+### Instance metadata (particular to cloud providers)
 
+On cloud providers the instances may expose information via the internal metadata API service (normally http://169.254.169.254). To restrict access to such service, it's possible to leverage the network policies.
 
+### CIS benchmark
 
+List of security best practices for systems, which were addapeted to kubernetes by the `kube-bench` project. It contains tests that can be executed from different ways to check if the cluster is compliant with the guidelines.
 
+- Running it from a docker container, which can be from a master or a worker node.
+
+```bash
+sudo docker run --pid=host -v /etc:/etc:ro -v /var:/var:ro -t aquasec/kube-bench:latest --version 1.21
+```
+
+### Kubernetes and Operational system binaries
+
+The OS where kubernetes is running will have other binaries and services, which can be used to gain access to the system. This means that it's important to keep track of any unwanted change on any file. This includes not only the binaries, but libraries and configuration files as well.
+
+Kubernetes shares the sha512 hash for the files available to download, and this can be used as source of truth to check if the files are sane.
