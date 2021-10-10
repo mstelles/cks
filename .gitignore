@@ -3,3 +3,6 @@ zee*
 *.swp
 .DS_*
 network/ingress/cert/
+*.crt
+*.pem
+*.key

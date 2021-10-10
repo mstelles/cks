@@ -170,3 +170,68 @@ kubectl run pod1 --image=ubuntu -- sleep 3600
 Error from server (Forbidden): pods is forbidden: User "lobo" cannot create resource "pods" in API group "" in the namespace "default"
 ```
 
+
+
+### Service Account
+
+Used to give permissions to resources. All pods that are deployed will use a ServiceAccount and if none is specified, the default SA is chosen.
+
+```bash
+k exec -ti multi -- mount | grep serviceaccount
+tmpfs on /run/secrets/kubernetes.io/serviceaccount type tmpfs (ro,relatime)
+```
+
+With the ServiceAccount comes a `token` that can be used to access the cluster API. in a default configuration this `token` won't give many permissions but in most of the cases pods won't need to have such kind of access and disabling it might be needed.
+
+The below example shows the `multi` pod using the token from the `supersa` service account to communicate with the cluster's API.
+
+```bash
+root@multi:/# curl -k https://kubernetes -H "Authorization: Bearer $(cat /run/secrets/kubernetes.io/serviceaccount/token)"
+{
+  "kind": "Status",
+  "apiVersion": "v1",
+  "metadata": {
+
+  },
+  "status": "Failure",
+  "message": "forbidden: User \"system:serviceaccount:default:supersa\" cannot get path \"/\"",
+  "reason": "Forbidden",
+  "details": {
+
+  },
+  "code": 403
+}
+```
+
+It's possible to disable the mount point for the pod by changing the pod or service account. Below an example changing the service account.
+
+```yaml
+kubectl edit sa supersa
+(...)
+automountServiceAccountToken: false
+metadata:
+(...)
+```
+
+Redeploy the pod and check that it won't have the service account mounted as a volume.
+
+```bash
+kubectl -f multi.yaml replace --force
+kubectl exec -ti multi -- mount | grep serviceaccount
+```
+
+When creating a service account it by default won't have any permissions. The same goes for the de fault service account. But it's possible to give permissions by binding it to a `cluster role` or `role`.
+
+Below an example where a new role is created allowing to get pods in the default namespace.
+
+```bash
+kubectl create role superrole --verb=get --resource=pods
+kubectl create rolebinding superrole --role=superrole --serviceaccount=default:supersa
+kubectl auth can-i get pods --as system:serviceaccount:default:supersa
+yes
+kubectl auth can-i list pods --as system:serviceaccount:default:supersa
+no
+```
+
+
+
