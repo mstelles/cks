@@ -492,9 +492,194 @@ Order to upgrade the parts of the cluster:
    node/k8sworker01 uncordoned
    ```
 
-   ### Secrets
+### ConfigMaps and Secrets
 
-   
+A way to share information with pods in a decoupled way. For example, the applications may need credentials or other data and instead adding it directly to the code. it's possible to share it using `secrets` or `configMaps`. The basic difference between these two is that ConfigMaps will hold information that doesn't need to be encrypted while `secrets` will be used when handling sensitive information.
+
+Creatiing two simple secrets and using them on a pod. 
+
+```bash
+kubectl create secret generic secret1 --from-literal=key1="value for key1, secret1"
+kubectl create secret generic secret1 --from-literal=key2="value for key2, secret2"
+```
+
+The below manifest is an example to use the first as a mount point and the second as environment variable.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    run: multi
+  name: multi
+spec:
+  containers:
+  - args:
+    - sleep
+    - "3600"
+    image: mstelles/multi
+    env:
+      - name: SECRET2_VAR
+        valueFrom:
+          secretKeyRef:
+            name: secret2
+            key: key2
+    name: multi
+    volumeMounts:
+    - name: secret1
+      mountPath: "/etc/secret1"
+  volumes:
+  - name: secret1
+    secret:
+      secretName: secret1
+```
+
+Check:
+
+```bash
+kubectl exec -ti multi -- bash -c "cat /etc/secret1/key1"
+value for key1, secret1
+kubectl exec -ti multi -- bash -c "env | grep SECRET2_VAR"
+SECRET2_VAR=value for key2, secret2
+```
+
+Since this information is available to the container, it can also be accessed via the filesystem from the node where the container is running.
+
+- Via `/proc` filesystem:
+
+```bash
+docker container ps # get the ID of the container where the secret was mounted
+docker container inspect <id> | jq .[0] | jq '.State.Pid' # get the pid of the container
+cat /proc/<pid>/root/etc/secret1/key1
+value for key1, secret1
+```
+
+- Via the container filesystem in the OS:
+
+```bash
+docker container ps # get the ID of the container where the secret was mounted
+secret=$(docker container inspect 2c8edf1334843  | grep Source.*secret1 | cut -d\" -f4 #secret1 as secret name)
+cat $secret/key1 #key1 as the key name for the secret1 secret
+value for key1, secret1
+```
+
+For environment variables, just check the output of the `docker container inspect` command, as it's already exposed there.
+
+```bash
+# The last number is for the `Env` list and may be different
+docker container inspect 2c8edf1334843  | jq .[0] | jq '.Config.Env' | jq .[0] 
+"SECRET2_VAR=value for key2, secret2"
+```
+
+Another last option would be to check it in `etcd`, which should be running as a pod in the master node. To make this happen, use the `etcdctl` command, always informing the API version and the certficate/key files.
+
+Example:
+
+```bash
+ETCDCTL_API=3 etcdctl endpoint health --cacert /etc/kubernetes/pki/etcd/ca.crt --cert /etc/kubernetes/pki/apiserver-etcd-client.crt --key /etc/kubernetes/pki/apiserver-etcd-client.key
+127.0.0.1:2379 is healthy: successfully committed proposal: took = 679.12µs
+```
+
+Hint: to get the certs, grep `etcd` in the manifest file for the service.
+
+```bash
+grep etcd /etc/kubernetes/manifests/kube-apiserver.yaml
+    - --etcd-cafile=/etc/kubernetes/pki/etcd/ca.crt
+    - --etcd-certfile=/etc/kubernetes/pki/apiserver-etcd-client.crt
+    - --etcd-keyfile=/etc/kubernetes/pki/apiserver-etcd-client.key
+    - --etcd-servers=https://127.0.0.1:2379
+```
+
+Now getting the secret via `etcd`, The output below shows on the last line the key, the value and the type of the secret.
+
+```bash
+ETCDCTL_API=3 etcdctl --cacert /etc/kubernetes/pki/etcd/ca.crt --cert /etc/kubernetes/pki/apiserver-etcd-client.crt --key /etc/kubernetes/pki/apiserver-etcd-client.key get /registry/secrets/default/secret2
+/registry/secrets/default/secret2
+k8s
 
 
+v1Secret�
+�
+secret2default"*$9a3ed911-a813-42de-8c7e-1caf746769de2����z�_
+kubectl-createUpdatev����FieldsV1:-
++{"f:data":{".":{},"f:key2":{}},"f:type":{}}
+key2value for key2, secret2Opaque"
+```
+
+### Enabling encryption on `etcd`
+
+It is possible to encrypt secrets that are stored in the cluster. Since this service is running as a pod in the master node, necessary to follow the below steps:
+
+1. Create an `EncryptionConfiguration` resource file in the k8s master node. This file can be anywhere but `/etc/kubernetes/etcd/ec.yaml` is a good starting point.
+
+   The below example uses two providers and it is important to understand that they are processed in order. Meaning, with this configuration, the secrets that will be created from this point onwards will be encrypted with `aescbc` algorithm but plain text secrets will be readable (`identity: {}` provider). Removing the last line will cause the plain text secrets to be unreadable.
+
+```yaml
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources:
+    - secrets
+    providers:
+    - aescbc:
+        keys:
+        - name: key1
+          # echo -n abcdefhg12345678 | base64
+          secret: YWJjZGVmZ2gxMjM0NTY3OA==
+    - identity: {}
+```
+
+OBS.: The secret has to be 16, 24 or 32 byts in size. To generate a random secret, try:
+
+```bash
+head -c 32 /dev/urandom | base64
+```
+
+To use an already know key as secret, try:
+
+```bash
+echo -n <your 16, 24 or 32 bytes key> | base64
+```
+
+2. Add this file with the `--encryption-provider-config` parameter to the pod manifest. This can be done either editing the pod or it's manifest (`/etc/kubernetes/manifests/kube-apiserver.yaml`). On this same file, mount the `/etc/kubernetes/etcd/` directory in the pod. Full example [here](https://raw.githubusercontent.com/mstelles/cks/main/kube-apiserver.yaml).
+
+```yaml
+(...)
+spec:
+  containers:
+  - command:
+    - kube-apiserver
+    - --encryption-provider-config=/etc/kubernetes/etcd/ec.yaml
+(...)
+    volumeMounts:
+    - mountPath: /etc/kubernetes/pki
+      name: k8s-certs
+      readOnly: true
+(...)
+   - mountPath: /etc/kubernetes/etcd
+      name: etcd
+      readOnly: true
+(...)
+```
+
+From this moment onwards, all new secrets will be encrypted and it won't be possible to read them via the etcd. Via the api server still possible.
+
+For example, creating `secret3` to test.
+
+```bash
+kubectl create secret generic secret3 --from-literal=key3=topsecret
+# getting it via API
+kubectl get secret secret3 -o yaml  | grep ^\ \ key3: | awk '{print$2}' | base64 -d; echo
+topsecret
+# getting via etcd
+ETCDCTL_API=3 etcdctl --cacert /etc/kubernetes/pki/etcd/ca.crt --cert /etc/kubernetes/pki/apiserver-etcd-client.crt --key /etc/kubernetes/pki/apiserver-etcd-client.key get /registry/secrets/default/secret3
+/registry/secrets/default/secret3
+��g��D�^ϯl��-���޶�TP�ќ^m��N�]�ML�n�[4TJ����Y�Ȍ>W邪S�4�Ĥ*���`tZ�$��H�c*g�S��l�:�5�@Th��U�l�\����5���4�EeP�\>�{��DfH~�Ii�>΢�w�˝}�FZ��(ܳW�2K���+泻�cA,�B�}��#G��9�>
+```
+
+If the final outcome is to encrypt all the secrets that are already in place, first run the below command and then remove the `identity` line from the `EncryptionConfiguration` manifest.
+
+```bash
+kubectl get secret --all-namespaces -o yaml | kubectl replace -f -
+```
 
