@@ -766,7 +766,14 @@ spec:
 kubectl exec -ti multi -- bash -c "uname -a"
 Linux multi 4.4.0 #1 SMP Sun Jan 10 15:06:54 PST 2016 x86_64 GNU/Linux
 # from the OS
-uname -a
-Linux centos8 4.18.0-338.el8.x86_64 #1 SMP Fri Aug 27 17:32:14 UTC 2021 x86_64 x86_64 x86_64 GNU/Linux
+kubectl get nodes -o wide -l=kubernetes.io/hostname=k8sworker01
+NAME          STATUS   ROLES    AGE   VERSION   INTERNAL-IP     EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION       CONTAINER-RUNTIME
+k8sworker01   Ready    <none>   27d   v1.21.0   192.168.1.161   <none>        Ubuntu 18.04.5 LTS   4.15.0-156-generic   docker://20.10.7
 ```
 
+### OS level security domains
+
+- Security Contexts
+- Pod security
+- 
+- 
