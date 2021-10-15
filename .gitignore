@@ -6,3 +6,4 @@ network/ingress/cert/
 *.crt
 *.pem
 *.key
+multi.yaml

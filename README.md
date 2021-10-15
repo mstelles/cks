@@ -683,3 +683,90 @@ If the final outcome is to encrypt all the secrets that are already in place, fi
 kubectl get secret --all-namespaces -o yaml | kubectl replace -f -
 ```
 
+### Sandbox
+
+When related to containers, sandbox is an additional layer between the container application and the OS kernel syscalls. And due to it's natural architrecture, it will inflict more load on the OS and might not be applicable to all situations. Below some summary topics when using sandbox containers:
+
+- Resource usage from OS perspective will increase;
+- Not optimal for large or containers with heavy syscall workloads;
+- Won't allow direct access to hardware.
+
+The `kubelet` daemon uses CRI (container runtime interface) to choose which container runtime is going to be used and in a cluster, only one runtime is allowed. Meaning, it's not possible to use for example `docker` and one sandbox engine at the same time.
+
+Two solutions for sandbox are:
+
+- gVisor: it implements a "fake" kernel on top of the OS kernel which acts as a proxy. It doesn't supports all system calls though.
+- Katacontainers: It wraps the container in a virtual machine, creating a more strict isolation layer but also creating some restrictions for it's usage.
+
+Pratical example using gvisor:
+
+1. Install gVisor
+
+```bash
+ARCH=$(uname -m)
+URL=https://storage.googleapis.com/gvisor/releases/release/20210806/${ARCH}
+sudo apt-get update
+sudo apt-get install -y apt-transport-https ca-certificates curl gnupg-agent software-properties-common
+mkdir ./tmp_install
+cd ./tmp_install
+wget ${URL}/runsc ${URL}/runsc.sha512 \
+  ${URL}/containerd-shim-runsc-v1 ${URL}/containerd-shim-runsc-v1.sha512
+sha512sum -c runsc.sha512 -c containerd-shim-runsc-v1.sha512
+chmod a+rx runsc containerd-shim-runsc-v1
+sudo mv runsc containerd-shim-runsc-v1 /usr/local/bin
+```
+
+Create the `/etc/containerd/config.toml` file (contents [here](https://raw.githubusercontent.com/mstelles/cks/main/config.toml))
+
+Restart `kubelet` and  `containerd` services.
+
+```bash
+systemctl restart containerd
+systemctl restart kubelet
+```
+
+OBS.: If even following these steps the service pod isn't running and with the `Failed to create pod sandbox: rpc error: code = Unknown desc = RuntimeHandler "runsc" not supported` error message, check the FAQ below.
+
+Ref:
+
+- Install: https://gvisor.dev/docs/user_guide/install/
+- Configure: https://gvisor.dev/docs/user_guide/containerd/quick_start/
+- FAQ: https://gvisor.dev/docs/user_guide/faq/#runtime-handler
+
+2. Create the `RuntimeClass` k8s object
+
+```yaml
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+```
+
+3. Run a pod using the created `RuntimeClass`
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    run: multi
+  name: multi
+spec:
+  runtimeClassName: gvisor
+  containers:
+  - image: mstelles/multi
+    name: multi
+```
+
+4. Check the differences. If everything is working fine, executing the `uname` command from whithin the pod should show a different output when comparing to the OS.
+
+```bash
+# from the pod
+kubectl exec -ti multi -- bash -c "uname -a"
+Linux multi 4.4.0 #1 SMP Sun Jan 10 15:06:54 PST 2016 x86_64 GNU/Linux
+# from the OS
+uname -a
+Linux centos8 4.18.0-338.el8.x86_64 #1 SMP Fri Aug 27 17:32:14 UTC 2021 x86_64 x86_64 x86_64 GNU/Linux
+```
+
