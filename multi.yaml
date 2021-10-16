@@ -5,7 +5,8 @@ metadata:
     run: multi
   name: multi
 spec:
-  runtimeClassName: gvisor
   containers:
   - image: mstelles/multi
     name: multi
+    securityContext:
+      allowPrivilegeEscalation: true
