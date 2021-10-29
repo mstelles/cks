@@ -6,7 +6,5 @@ metadata:
   name: multi
 spec:
   containers:
-  - image: mstelles/multi
+  - image: mstelles/multi@sha256:55c162aaaa83f6561d142d411c5f92140dc0a7c810ed1fa71e451e580eef2c07
     name: multi
-    securityContext:
-      allowPrivilegeEscalation: true

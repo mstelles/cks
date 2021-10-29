@@ -255,10 +255,6 @@ spec:
   - client auth
 ```
 
-```bash
-kubectl create -f https://raw.githubusercontent.com/mstelles/cks/main/rbac/csr.yaml
-```
-
 - The CSR will be on pending state.
 
 ```bash
@@ -316,12 +312,14 @@ kubectl run pod1 --image=ubuntu -- sleep 3600
 Error from server (Forbidden): pods is forbidden: User "lobo" cannot create resource "pods" in API group "" in the namespace "default"
 ```
 
+
+
 ### Service Account
 
 Used to give permissions to resources. All pods that are deployed will use a ServiceAccount and if none is specified, the default SA is chosen.
 
 ```bash
-k exec -ti multi -- mount | grep serviceaccount
+kubectl exec -ti multi -- mount | grep serviceaccount
 tmpfs on /run/secrets/kubernetes.io/serviceaccount type tmpfs (ro,relatime)
 ```
 
@@ -377,6 +375,8 @@ kubectl auth can-i list pods --as system:serviceaccount:default:supersa
 no
 ```
 
+
+
 ### Anonymous access to the API service
 
 By default the access to the API service is allowed to the anonymous user, and this happens because internally the cluster needs this kind of access as some health probes keep on reaching the API service. However, it's possible to disable it if needed, in a specific situation.
@@ -421,6 +421,8 @@ curl -k https://192.168.1.160:6443
 
 It's important to re-enable the access so the cluster internals work properly.
 
+
+
 ### Creating manual requests to the API server
 
 It is possible to get the credentials being used and stored in the `kubeconfig` file and use them to create the calls to the API server.
@@ -458,9 +460,13 @@ curl https://192.168.1.160:6443 --cacert ca --cert crt --key key
 (...)
 ```
 
+
+
 ### Admission Controllers
 
 Piece of code that runs inside the `kube-apiserver` and processes requests after authentication and authorization stages. To change which admission controllers are in use by the cluster, change the `--enable-admission-plugins` option in the `kube-apiserver` manifest. There is an extense list of admission controllers and on this example, the focus is the `NodeRestriction` controller as it is normally enabled by default and widely used to restrict pods and nodes to change labels, add/remove taints and so on.
+
+
 
 ### Cluster upgrade
 
@@ -608,6 +614,8 @@ kubectl-createUpdatev����FieldsV1:-
 key2value for key2, secret2Opaque"
 ```
 
+
+
 ### Enabling encryption on `etcd`
 
 It is possible to encrypt secrets that are stored in the cluster. Since this service is running as a pod in the master node, necessary to follow the below steps:
@@ -684,6 +692,8 @@ If the final outcome is to encrypt all the secrets that are already in place, fi
 ```bash
 kubectl get secret --all-namespaces -o yaml | kubectl replace -f -
 ```
+
+
 
 ### Sandbox
 
@@ -772,6 +782,8 @@ kubectl get nodes -o wide -l=kubernetes.io/hostname=k8sworker01
 NAME          STATUS   ROLES    AGE   VERSION   INTERNAL-IP     EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION       CONTAINER-RUNTIME
 k8sworker01   Ready    <none>   27d   v1.21.0   192.168.1.161   <none>        Ubuntu 18.04.5 LTS   4.15.0-156-generic   docker://20.10.7
 ```
+
+
 
 ### OS level security domains
 
@@ -958,3 +970,761 @@ multi   1/1     1            1           17s
 Error from server (Forbidden): error when creating "multi.yaml": pods "multi" is forbidden: PodSecurityPolicy: unable to admit pod: [spec.containers[0].securityContext.allowPrivilegeEscalation: Invalid value: true: Allowing privilege escalation for containers is not allowed]
 ```
 
+
+
+### mTLS / Pod to Pod communication
+
+A mechanism used to mutually authenticate two ends in order to create a secure communication channel between them. By default the pod to pod communication happens in clear text and the goal of mTLS is to be able to encrypt this traffic by using certificates.
+
+A way to make this happen is to use a proxy as a sidecar container, which would be responsible for the communication and certificate exchange, while the app container doesn't need to be touched. An initContainer would add IPTables routes to route the traffic to the app container and to do so, it needs the `NET_ADMIN` capability.
+
+This functionality can be implemented by a ServiceMesh service, such as Istio or Linkerd.
+
+The below example is a simple way to implement a pod with two containers, one acting as a simple app and the other one as a initContainer with `NET_ADMIN` capabilites and therefore, able to change network configurations in the pod.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    run: pod
+  name: pod
+spec:
+  containers:
+  - args:
+    - sh
+    - -c
+    - ping www.google.com
+    image: busybox
+    name: pod
+  - name: proxy
+    image: debian
+    args:
+    - bash
+    - -c
+    - 'apt update && apt -y install iptables && iptables -L'
+    securityContext:
+      capabilities:
+        add: ["NET_ADMIN"]
+```
+
+
+
+### OPA - Open Policy Agent
+
+An external tool that allows to write custom policies for the cluster. The OPA Gatekeeper will make the OPA to act as an admission controller and the basic configuration would be to first create a `ConstraintTemplate` and then a `Constraint`, which will leverage the object created on the first step.
+
+- Install OPA
+
+OBS.: `NodeRestriction` should be the only admission plugin in the `kube-apiserver`.
+
+```bash
+kubectl create -f https://raw.githubusercontent.com/killer-sh/cks-course-environment/master/course-content/opa/gatekeeper.yaml
+```
+
+Official install guide [here](https://open-policy-agent.github.io/gatekeeper/website/docs/install/).
+
+Check:
+
+```bash
+kubectl get crd
+
+NAME                                                 CREATED AT
+configs.config.gatekeeper.sh                         2021-10-20T12:17:03Z
+constraintpodstatuses.status.gatekeeper.sh           2021-10-20T12:17:03Z
+constrainttemplatepodstatuses.status.gatekeeper.sh   2021-10-20T12:17:03Z
+constrainttemplates.templates.gatekeeper.sh          2021-10-20T12:17:04Z
+```
+
+Example 1: restrict pods to be deployed.
+
+Create a `ConstraintTemplate` object. When applied, this will generate a new object in the cluster which can be used to specify which kind of resources will be subject to the specified action.
+
+```yaml
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: k8salwaysdeny
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sAlwaysDeny
+      validation:
+        openAPIV3Schema:
+          properties:
+            message:
+              type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8salwaysdeny
+        violation[{"msg": msg}] {
+          1 > 0
+          msg := input.parameters.message
+        }
+```
+
+Create the `K8sAlwaysDeny` object, informing to the `ConstraintTemplate` that the policy will be applied to `pods`.
+
+```yaml
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sAlwaysDeny
+metadata:
+  name: pod-always-deny
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+  parameters:
+    message: "No POD shall pass!"
+```
+
+After applying both templates, the below resources should be present in the cluster.
+
+```bash
+kubectl get constraint,constrainttemplate
+
+NAME                                                      AGE
+k8salwaysdeny.constraints.gatekeeper.sh/pod-always-deny   37s
+NAME                                                       AGE
+constrainttemplate.templates.gatekeeper.sh/k8salwaysdeny   87m
+```
+
+Trying to launch a new pod, an exception message must be shown and the pod shouldn't be created.
+
+```bash
+kubectl run multi --image=mstelles/multi -- sleep 1d
+
+Error from server ([pod-always-deny] ACCESS DENIED!): admission webhook "validation.gatekeeper.sh" denied the request: [pod-always-deny] No POD shall pass!
+```
+
+Example 2: Policy to enforce that new `NameSpaces` should have the label "CKS". On this example the violation section uses json formated output fields to create the `provided` field ('.metadata.labels["cks"]') to evaluate the expression. And then, uses the input from the pod manifest as `required`.
+
+Create the `ContraintTemplate`.
+
+```yaml
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredlabels
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredLabels
+      validation:
+        openAPIV3Schema:
+          properties:
+            labels:
+              type: array
+              items: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredlabels
+        violation[{"msg": msg, "details": {"missing_labels": missing}}] {
+          provided := {label | input.review.object.metadata.labels[label]}
+          required := {label | label := input.parameters.labels[_]}
+          missing := required - provided
+          count(missing) > 0
+          msg := sprintf("you must provide labels: %v", [missing])
+        } 
+```
+
+Create the `k8srequiredlabels` object, defined in the `ConstraintTemplate`, to be applied to `Namespaces`.
+
+```yaml
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredLabels
+metadata:
+  name: ns-must-have-cks
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Namespace"]
+  parameters:
+    labels: ["cks"]
+```
+
+Check the created resources.
+
+```bash
+kubectl get constrainttemplate,constraint
+
+NAME                                                           AGE
+constrainttemplate.templates.gatekeeper.sh/k8srequiredlabels   2m51s
+
+NAME                                                           AGE
+k8srequiredlabels.constraints.gatekeeper.sh/ns-must-have-cks   8s
+```
+
+When creating a `Namespace` without a label with name `CKS`, it shall fail showing the previously configured exception message.
+
+```bash
+kubectl create ns whatever
+
+Error from server ([ns-must-have-cks] you must provide labels: {"cks"}): admission webhook "validation.gatekeeper.sh" denied the request: [ns-must-have-cks] you must provide labels: {"cks"}
+```
+
+To be able to create the `Namespace`, just add a label named `CKS` with any value to the manifest.
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: whatever
+  labels:
+    cks: bah
+```
+
+Example 3: Enforce that a `deployment` should have a minimum value for the replicas.
+
+Create the `ConstraintTemplate`.
+
+```yaml
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: k8sminreplicacount
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sMinReplicaCount
+      validation:
+        openAPIV3Schema:
+          properties:
+            min:
+              type: integer
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8sminreplicacount
+        violation[{"msg": msg, "details": {"missing_replicas": missing}}] {
+          provided := input.review.object.spec.replicas
+          required := input.parameters.min
+          missing := required - provided
+          missing > 0
+          msg := sprintf("you must provide %v more replicas", [missing])
+        }
+```
+
+Create the `K8sMinReplicaCount` object.
+
+```yaml
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sMinReplicaCount
+metadata:
+  name: deployment-must-have-min-replicas
+spec:
+  match:
+    kinds:
+      - apiGroups: ["apps"]
+        kinds: ["Deployment"]
+  parameters:
+    min: 5
+```
+
+Sample error message when trying to create a deployment with one replica:
+
+```bash
+Error from server ([deployment-must-have-min-replicas] you must provide 4 more replicas): error when creating "deploy.yaml": admission webhook "validation.gatekeeper.sh" denied the request: [deployment-must-have-min-replicas] you must provide 4 more replicas
+```
+
+Example 4: Enforce usage of images from a certain registry.
+
+Template:
+
+```yaml
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: k8strustedimages
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sTrustedImages
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8strustedimages
+
+        violation[{"msg": msg}] {
+          image := input.review.object.spec.containers[_].image
+          not startswith(image, "docker.io/")
+          not startswith(image, "k8s.gcr.io/")
+          msg := "not trusted image!"
+        }
+```
+
+Constraint
+
+```yaml
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sTrustedImages
+metadata:
+  name: pod-trusted-images
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+```
+
+
+
+#### Using OPA to perform conftests
+
+The OPA project created a container image that can be used to perform conf tests on manifest files and check if the deployments will be in conformity with the policies.
+
+Below an example using the below deployment manifest and rego policy document.
+
+- Deployment manifest:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: test
+  name: test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test
+  template:
+    metadata:
+      labels:
+        app: test
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - image: httpd
+          name: httpd
+```
+
+- Policy (added on `./project` directory):
+
+```yaml
+package main
+
+deny[msg] {
+  input.kind = "Deployment"
+  not input.spec.template.spec.securityContext.runAsNonRoot = true
+  msg = "Containers must not run as root"
+}
+
+deny[msg] {
+  input.kind = "Deployment"
+  not input.spec.selector.matchLabels.app
+  msg = "Containers must provide app label for pod selectors"
+}
+```
+
+- Test:
+
+```bash
+docker run --rm -v $(pwd):/project openpolicyagent/conftest test deploy.yaml
+```
+
+This same docker image can be used to perform conftests on Dockerfiles. The below example will output an alarm message when the image is based on `ubuntu` and when some command defined in the `commands.rego` file is being used in the Dockerfile.
+
+- Dockerfile
+
+```dockerfile
+FROM ubuntu
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y golang-go
+COPY app.go .
+RUN go build app.go
+CMD ["./app"]
+```
+
+- Policy files (added on `./project` directory):
+
+```yaml
+#base.rego
+package main
+
+denylist = [
+  "ubuntu"
+]
+
+deny[msg] {
+  input[i].Cmd == "from"
+  val := input[i].Value
+  contains(val[i], denylist[_])
+
+  msg = sprintf("unallowed image found %s", [val])
+}
+```
+
+```yaml
+#commands.rego
+package commands
+
+denylist = [
+  "apk",
+  "apt",
+  "pip",
+  "curl",
+  "wget",
+]
+
+deny[msg] {
+  input[i].Cmd == "run"
+  val := input[i].Value
+  contains(val[_], denylist[_])
+
+  msg = sprintf("unallowed commands found %s", [val])
+}
+```
+
+- Test:
+
+```bash
+docker run --rm -v $(pwd):/project openpolicyagent/conftest test Dockerfile --all-namespaces
+```
+
+- Really useful link with samples and a testing tool to evaluate the policies: https://play.openpolicyagent.org/
+
+
+
+### Docker security related aspects
+
+- Reduce the final image size by using multi stage builds. Building smaller images means:
+  - Easier to deploy;
+  - Less binaries, lower probability of exploitable applications.
+
+- Other good practices, to be applied when possible:
+  - Don't build the image using another image with the 'latest' tag. Try to select the specific version;
+  - Avoid running the application as root;
+  - Remove filesystem permissions;
+  - Remove the shell.
+
+```dockerfile
+FROM ubuntu:20.04
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y golang-go
+COPY app.go .
+RUN CGO_ENABLED=0 go build app.go
+
+FROM alpine:3.14.2
+RUN addgroup -S group && adduser -S lameuser -G group -h /home/lameuser
+COPY --from=0 /app /home/lameuser
+RUN chmod u-w /etc
+RUN rm /bin/*
+USER lameuser
+CMD ["/home/user/app"]
+```
+
+
+
+### Use credentials to log into private registries
+
+When using private image registries is necessary to inform the credentials apiserver so it can pull the images from the repository. To do so, first a secret should be created:
+
+```bash
+kubectl create secret docker-registry regcred --docker-server=<your-registry-server> --docker-username=<your-name> --docker-password=<your-pword> --docker-email=<your-email>
+```
+
+Then a service account which will use the secret and be used by the pods that uses the image.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: private-reg
+spec:
+  containers:
+  - name: private-reg-container
+    image: <your-private-image>
+  imagePullSecrets:
+  - name: regcred
+```
+
+
+
+### Use the image digest (hash) instead the tag
+
+To be 100% sure that the image being used by some pods is legit, instead of using tags, which can be forged, the image digest can be used. A way to get the image hash is to get the information from a pod with a container executing the wanted image. For example:
+
+```bash
+kubectl get pods -o json | jq '.items[0].status.containerStatuses[0].imageID'
+"docker-pullable://mstelles/multi@sha256:55c162aaaa83f6561d142d411c5f92140dc0a7c810ed1fa71e451e580eef2c07"
+```
+
+This same hash can be found on `hub.docker.com`, searching for the image and selecting the desired release.
+
+Get this hash and use it as label.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    run: multi
+  name: multi
+spec:
+  containers:
+  - image: mstelles/multi@sha256:55c162aaaa83f6561d142d411c5f92140dc0a7c810ed1fa71e451e580eef2c07
+    name: multi
+```
+
+
+
+### Security analysis
+
+- Kubesec: can be used as a docker container to test a given pod manifest file. It will only perform an analysis on the configuration, not image used itself.
+
+```bash
+kubectl run multi --image=mstelles/multi -o yaml --dry-run=client
+docker run -i kubesec/kubesec:512c5e0 scan /dev/stdin < pod.yaml
+```
+
+Based on the output it's possible to make adjustments to enhance pod security.
+
+- Trivy: can be used to check vulnerabilities on docker images.
+
+```bash
+docker run ghcr.io/aquasecurity/trivy:latest image <image name>
+```
+
+- Falco: A service which runs in the OS monitoring kernel syscalls that might be suspicious, according to previous definitions. It could for example detect whether a shell was executed inside a pod, if a privileged container was started or any other aspect that is added to the configuration.
+
+The main configuration starting point will be `/etc/falco` and by default it will forward the messages via `syslog`.
+
+Example output:
+
+```bash
+# executing a shell from the container
+06:17:14.397803113: Notice A shell was spawned in a container with an attached terminal (user=root user_loginuid=-1 k8s_alpine_alpine_default_8c3d9a15-f285-4c2b-8b8a-a8772e78ca6f_0 (id=ea7014d98c55) shell=sh parent=runc cmdline=sh terminal=34816 container_id=ea7014d98c55 image=alpine)
+# change anything in /etc
+06:17:29.054628382: Error File below /etc opened for writing (user=root user_loginuid=-1 command=sh parent=<NA> pcmdline=<NA> file=/etc/anyfile program=sh gparent=<NA> ggparent=<NA> gggparent=<NA> container_id=ea7014d98c55 image=alpine)
+# run an app related command (apt, yum, apk)
+06:26:57.516232567: Error Package management process launched in container (user=root user_loginuid=-1 command=apk add vim container_id=ea7014d98c55 container_name=k8s_alpine_alpine_default_8c3d9a15-f285-4c2b-8b8a-a8772e78ca6f_0 image=alpine:latest)
+```
+
+
+
+### Immutability
+
+The act of not changing the container/pod/VM while it's running, as the application should be already deployed as it should be. Some mechanisms can be used to enforce it and on extreme scenarios init pods or even `startupProbe` can be used to make last minute changes to the pods.
+
+Example 1: Setting the fliesystem as `RO` at container level, but using an `emptyDir` to allow a service to run.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    run: httpd
+  name: httpd
+spec:
+  containers:
+  - image: httpd
+    name: httpd
+    securityContext:
+      readOnlyRootFilesystem: true
+    volumeMounts:
+    - mountPath: /usr/local/apache2/logs
+      name: apache-logs
+  volumes:
+  - name: apache-logs
+```
+
+Example 2: use a `startupProbe` to remove all shells from the pod.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    run: httpd
+  name: httpd
+spec:
+  containers:
+  - image: httpd
+    name: httpd
+    startupProbe:
+      exec:
+        command:
+        - rm
+        - /bin/*sh
+      initialDelaySeconds: 1
+      periodSeconds: 5
+```
+
+
+
+### Auditing in kubernetes
+
+- Stages
+  - RequestReceived: The API server audit handler receives the request;
+  - ResponseStarted: The response header is sent and more data will follow;
+  - ResponseComplete: The complete response is sent (header and body) and no more data is going to be sent;
+  - Panic: Generated when a panic event happens.
+- Levels
+  - None: no message that matches a given rule will be logged;
+  - Metadata: Logs the request metadata, which contains: requesting user, timestamp, resource, verb, etc. Doesn't log the request or body.
+  - Request: Logs the metadata and the request body (not the response body). Doesn't apply to non-resource requests.
+  - RequestResponse: Highest level, logs all the above. Also doesn't apply to non-resource requests.
+
+Configuring audit in the cluster:
+
+- In the master node, create a directory to hold the configuration (`/etc/kubernetes/audit`, for example);
+- Create the policy file in this folder (`policy.yaml`, for example);
+
+A policy that logs everything on `Metadata` level:
+
+```yaml
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+- level: Metadata
+```
+
+A more complex policy:
+
+```yaml
+apiVersion: audit.k8s.io/v1
+kind: Policy
+# Nothing from RequestReceived stage.
+omitStages:
+  - "RequestReceived"
+rules:
+  # nothing from verbs get, list and watch
+  - level: None
+    verbs: ["get","list","watch"]
+  # Metadata level for secrets
+  - level: Metadata
+    resources:
+    - group: ""
+      resources: ["secrets"]
+  # Everything from RequestResponse level
+  - level: RequestResponse
+```
+
+- Enable audit in the api server manifest (`kube-apiserver.yaml`), adding the lines that can be found in the docs. The basic configuration involves:
+
+Configuring the audit system itself;
+
+```yaml
+(...)
+    - --audit-policy-file=/etc/kubernetes/audit/policy.yaml
+    - --audit-log-path=/var/log/kubernetes/audit.log
+    - --audit-log-maxsize=500
+    - --audit-log-maxbackup=5
+(...)
+```
+
+Making the directory with the policy file available to the kube-apiserver pod.
+
+```yaml
+(...)
+    - mountPath: /etc/kubernetes/audit
+      name: audit
+      readOnly: true
+    - mountPath: /var/log/kubernetes/
+      name: audit-logs
+(...)
+  - hostPath:
+      path: /etc/kubernetes/audit
+      type: DirectoryOrCreate
+    name: audit
+  - hostPath:
+      path: /var/log/kubernetes/
+      type: DirectoryOrCreate
+    name: audit-logs
+(...)
+```
+
+#### Use case: investigate the access history of a secret
+
+For this to work the audit policy needs to include RequestResponse from secrets. Below examples to test:
+
+- Change the policy. The below example contains more than necessary configs.
+
+```yaml
+apiVersion: audit.k8s.io/v1
+kind: Policy
+# Nothing from RequestReceived stage.
+omitStages:
+  - "RequestReceived"
+rules:
+  # Removing some messages to make analysis easier
+  # Nothing from some internal components
+  - level: None
+    users:
+    - "system:kube-scheduler"
+    - "system:kube-proxy"
+    - "system:apiserver"
+    - "system:kube-controller-manager"
+    - "system:serviceaccount:gatekeeper-system:gatekeeper-admin"
+
+  # Nothing from worker nodes
+  - level: None
+    userGroups: ["system:nodes"]
+
+  # RequestResponse level for secrets
+  - level: RequestResponse
+    resources:
+    - group: ""
+      resources: ["secrets"]
+
+  # Everything from RequestResponse level
+  - level: RequestResponse
+```
+
+- Create new ServiceAccount and secret;
+
+```bash
+kubectl create sa my-super-sa
+# a token should be automatically generated
+kubectl get secret
+
+NAME                      TYPE                                  DATA   AGE
+default-token-54x59       kubernetes.io/service-account-token   3      40d
+my-super-sa-token-qg7xh   kubernetes.io/service-account-token   3      12s
+```
+
+- Create some resource that leverages this ServiceAccount (a pod for example).
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    run: my-super-pod
+  name: my-super-pod
+spec:
+  serviceAccountName: my-super-sa
+  containers:
+  - args:
+    - sleep
+    - "3600"
+    image: busybox
+    name: my-super-pod
+```
+
+- Grep the pod and ServiceAccount names in the log file. For example:
+
+```bash
+grep my-super-pod audit.log | grep my-super-sa | tail -1 | jq
+```
+
+
+
+
+
+
+
+
+
+## 
