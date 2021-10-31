@@ -126,18 +126,6 @@ kubectl -n kubernetes-dashboard create clusterrolebinding insecure --serviceacco
 
 
 
-### CIS benchmark
-
-List of security best practices for systems, which were addapeted to kubernetes by the `kube-bench` project. It contains tests that can be executed from different ways to check if the cluster is compliant with the guidelines.
-
-- Running it from a docker container, which can be from a master or a worker node.
-
-```bash
-sudo docker run --pid=host -v /etc:/etc:ro -v /var:/var:ro -t aquasec/kube-bench:latest --version 1.21
-```
-
-
-
 ### Role and rolebinding
 
 Relative to namespaces.
@@ -660,8 +648,3 @@ grep my-super-pod audit.log | grep my-super-sa | tail -1 | jq
 
 
 
-
-
-
-
-## 
