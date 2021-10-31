@@ -284,3 +284,119 @@ Error from server (Forbidden): error when creating "multi.yaml": pods "multi" is
 ```
 
 
+
+#### Controlling access to syscalls and resources on OS level
+
+- AppArmor: a Linux kernel module that intercepts syscalls made from applications on user space before it reaches the kernel. It works with profiles, which can operate on three modes:
+  - Enforce: the most restrictive mode, where the syscalls will be intercepted and some action may be taken, depending on the config.
+  - Complain: the syscalls made by the application will be registered but no action will be taken.
+  - Unconfined: process have full access to whatever syscalls.
+
+First instal `apparmor-utils` to manipulate the configurations. With this package in place, it's possible to generate a profile for the application and after it, update this profile with the needed details to allow the app to run, when it's the case. This is automatically done by apparmor by reading the log files from syslog. Note that AppArmor has to be configured on all worker nodes.
+
+Example: 
+
+```bash
+# type `F` when asked
+aa-gen-prof curl
+# check the profile
+cat /etc/apparmor.d/usr.bin.curl
+# test the curl command
+curl google.com
+curl: (6) Could not resolve host: google.com
+```
+
+After the creation of the profile and execution of the `curl` command, the access to the URL was denied and some entries were added to `/var/log/syslog`. This allows to check other legit files needed by the application and in the future if the behaviour changes, the access to other resources would be denied.
+
+```bash
+aa-logprof
+
+Reading log entries from /var/log/syslog.
+Updating AppArmor profiles in /etc/apparmor.d.
+Enforce-mode changes:
+
+Profile:  /usr/bin/curl
+Path:     /etc/ssl/openssl.cnf
+New Mode: owner r
+Severity: 2
+
+ [1 - #include <abstractions/lxc/container-base>]
+  2 - #include <abstractions/lxc/start-container>
+  3 - #include <abstractions/openssl>
+  4 - #include <abstractions/ssl_keys>
+  5 - owner /etc/ssl/openssl.cnf r,
+(A)llow / [(D)eny] / (I)gnore / (G)lob / Glob with (E)xtension / (N)ew / Audi(t) / (O)wner permissions off / Abo(r)t / (F)inish
+Adding #include <abstractions/lxc/container-base> to profile.
+Deleted 2 previous matching profile entries.
+
+= Changed Local Profiles =
+
+The following local profiles were changed. Would you like to save them?
+
+ [1 - /usr/bin/curl]
+(S)ave Changes / Save Selec(t)ed Profile / [(V)iew Changes] / View Changes b/w (C)lean profiles / Abo(r)t
+Writing updated profile for /usr/bin/curl.
+```
+
+Extending this to docker, it's possible to create a profile and invoke it when running the container. This will cause the container's execution to be controlled by AppArmor.
+
+To do so, first get the contents of the [docker-generic](https://raw.githubusercontent.com/mstelles/cks/main/apparmor-generic_profile) file, add it to `/etc/apparmor.d/docker-generic` and run:
+
+```bash
+apparmor_parser /etc/apparmor.d/docker-generic
+```
+
+WIth this configuration active, now it's possible to execute the pods using this profile.
+
+```bash
+docker run -dt --name=busybox --security-opt apparmor=docker-generic busybox
+```
+
+Now, execing a shell inside the container, some operations won't be allowed, such as invoking a shell, creating/changing files in some directories and so on.
+
+```bash
+sh
+sh: sh: Permission denied
+echo asdasd >> /etc/shadow
+sh: can't create /etc/shadow: Permission denied
+```
+
+To use AppArmor with kubernetes, the pods have to be deployed with a certain annotation, following the below example:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    run: busybox
+  annotations:
+    container.apparmor.security.beta.kubernetes.io/busybox: localhost/docker-generic
+  name: busybox
+(...)
+```
+
+
+
+- Seccomp: in a similar way when comparing to AppArmor, it controls the access from applications to kernel syscalls.
+
+In Kubernetes it should first be enabled via the `kubelet` daemon, indicating where the profiles are going to be stored (`/var/lib/kubelet/seccomp` by default) and then can be used from the pods.
+
+On this example, using the contents of a [generic](https://raw.githubusercontent.com/mstelles/cks/main/seccomp-generic_profile) Seccomp profile. This configuration lies in the worker nodes as well (similar to AppArmor).
+
+Use a simple pod manifest to test and one difference from AppArmor is that for seccomp the definition is as a `securityContext`.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    run: busybox
+  name: busybox
+spec:
+  securityContext:
+    seccompProfile:
+      type: Localhost
+      localhostProfile: audit.json
+(...)
+```
+
